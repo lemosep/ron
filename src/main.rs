@@ -1,7 +1,9 @@
 use std::{
     io::{self, Write},
-    net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{SocketAddr, ToSocketAddrs, UdpSocket},
     str::FromStr,
+    sync::mpsc::{self},
+    thread::{self},
 };
 use stun_rs::{
     self, MessageClass, MessageDecoderBuilder, MessageEncoderBuilder, StunMessageBuilder,
@@ -10,15 +12,45 @@ use stun_rs::{
 
 const DEFAULT_STUN_SERVER: &str = "stun1.l.google.com:19302";
 
+struct Message {
+    content: String,
+}
+
+impl Message {
+    fn new(content: String) -> Self {
+        Message { content }
+    }
+}
+
 fn main() {
-    let sock = UdpSocket::bind("0.0.0.0:7070").expect("couldn't bind to address");
+    let mut sock = UdpSocket::bind("0.0.0.0:7070").expect("couldn't bind to address");
 
     let stun_addr = get_stun_addr(&sock, DEFAULT_STUN_SERVER);
     println!("Your address: {stun_addr}");
 
-    let peer_addr: String = input("Type peer address: ");
+    let username: String = input("Username: ");
+    let peer_addr: String = input("Peer address: ");
 
-    sock.connect(peer_addr).expect("couldn't connect to peer");
+    sock.connect(peer_addr.clone())
+        .expect("couldn't connect to peer");
+
+    thread::scope(|s| {
+        let sock1 = sock.try_clone().unwrap();
+
+        let (msg_sender, msg_recvr) = mpsc::channel::<Message>();
+
+        // Fetches messages sent from peer and sends to receiver for logging.
+        s.spawn({
+            sock = sock1;
+            move || {
+                let mut buf = vec![0; 256];
+                let size = sock.recv(&mut buf).expect("couldn't receive message");
+
+                let peer_msg = Message::new(String::from_utf8_lossy(&buf[..size]).to_string());
+                msg_sender.send(peer_msg).expect("couldn't send message");
+            }
+        });
+    });
 }
 
 fn get_stun_addr(sock: &UdpSocket, addr: impl ToSocketAddrs) -> SocketAddr {
